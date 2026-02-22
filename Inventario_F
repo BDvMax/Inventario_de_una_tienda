@@ -1,0 +1,1288 @@
+import tkinter as tk
+from tkinter import messagebox, ttk
+from datetime import datetime
+import json
+import hashlib
+import requests  # Importante para Firebase
+
+# URL de tu base de datos Firebase
+FIREBASE_URL = "https://sistemasupermercado-f78dd-default-rtdb.firebaseio.com/"
+
+
+# ==========================================
+# SISTEMA DE AUTENTICACIÓN
+# ==========================================
+class SistemaUsuarios:
+    def __init__(self):
+        self.usuarios = {}
+        self.cargar_usuarios()
+    
+    def cargar_usuarios(self):
+        """Carga usuarios desde Firebase con validación de estado"""
+        try:
+            response = requests.get(f"{FIREBASE_URL}usuarios.json", timeout=5) # Añadimos timeout
+            response.raise_for_status()  # Verifica si la respuesta fue exitosa (200 OK)
+            
+            data = response.json()
+            if data:
+                self.usuarios = data
+            else:
+                # Si la base de datos está limpia/borrada
+                self.crear_usuarios_defecto()
+        except Exception as e:
+            # Si no hay internet, intentamos dejar el diccionario vacío 
+            # para evitar que el programa colapse
+            print(f"Error crítico de conexión: {e}")
+            self.usuarios = {}
+
+    def guardar_usuarios(self):
+        """Guarda usuarios en Firebase"""
+        try:
+            requests.put(f"{FIREBASE_URL}usuarios.json", json=self.usuarios)
+        except Exception as e:
+            print(f"Error guardando en la nube: {e}")
+
+    def crear_usuarios_defecto(self):
+        """Crea la estructura inicial de usuarios en Firebase si no existe"""
+        self.usuarios = {
+            "admin": {
+                "password": self.hash_password("admin123"),
+                "rol": "administrador",
+                "nombre_completo": "Administrador"
+            },
+            "gerente": {
+                "password": self.hash_password("gerente123"),
+                "rol": "gerente",
+                "nombre_completo": "Gerente de Tienda"
+            },
+            "empleado": {
+                "password": self.hash_password("empleado123"),
+                "rol": "empleado",
+                "nombre_completo": "Empleado"
+            }
+        }
+        self.guardar_usuarios()
+
+    def hash_password(self, password):
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    def validar_credenciales(self, usuario, password):
+        if usuario not in self.usuarios:
+            return False, None
+        if self.usuarios[usuario]["password"] == self.hash_password(password):
+            return True, self.usuarios[usuario]
+        return False, None
+
+    def agregar_usuario(self, usuario, password, rol, nombre_completo):
+        if usuario in self.usuarios:
+            return False, "El usuario ya existe"
+        self.usuarios[usuario] = {
+            "password": self.hash_password(password),
+            "rol": rol,
+            "nombre_completo": nombre_completo
+        }
+        self.guardar_usuarios()
+        return True, "Usuario creado exitosamente"
+
+# ==========================================
+# CLASE DEL SISTEMA DE INVENTARIO (MEJORADO)
+# ==========================================
+class InventarioApp:
+    # Definición de categorías
+    CATEGORIAS = [
+        "Lácteos",
+        "Carnes y Embutidos",
+        "Frutas y Verduras",
+        "Panadería",
+        "Abarrotes",
+        "Bebidas",
+        "Limpieza",
+        "Cuidado Personal",
+        "Congelados",
+        "Otros"
+    ]
+    
+    # Permisos por rol
+    PERMISOS = {
+        "administrador": ["crear", "editar", "eliminar", "ver", "reportes", "usuarios"],
+        "gerente": ["crear", "editar", "ver", "reportes"],
+        "empleado": ["editar", "ver"]
+    }
+    
+    def __init__(self, root, usuario_data):
+        self.root = root
+        self.usuario_actual = usuario_data["usuario"]
+        self.rol_actual = usuario_data["rol"]
+        self.nombre_completo = usuario_data["nombre_completo"]
+        
+        self.root.title(f"Sistema de Inventario Supermercado - {self.nombre_completo} ({self.rol_actual.upper()})")
+        self.root.geometry("1100x800")
+        
+        self.cargar_datos()
+        self.producto_actual = None
+        self.setup_ui()
+    
+    def tiene_permiso(self, accion):
+        """Verifica si el usuario tiene permiso para realizar una acción"""
+        return accion in self.PERMISOS.get(self.rol_actual, [])
+    
+    def cargar_datos(self):
+        """Carga los productos e historial desde Firebase."""
+        try:
+            response = requests.get(f"{FIREBASE_URL}inventario.json")
+            data = response.json()
+            if data:
+                self.productos = data.get("productos", {})
+                # El historial en Firebase a veces viene como lista o diccionario
+                hist = data.get("historial", [])
+                self.historial_persistente = hist if isinstance(hist, list) else list(hist.values())
+            else:
+                self.inicializar_datos_defecto()
+        except Exception as e:
+            messagebox.showerror("Error de Conexión", f"No se pudo conectar con Firebase: {e}")
+            self.productos = {}
+            self.historial_persistente = []
+    
+    def inicializar_datos_defecto(self):
+        """Datos iniciales con precios y categorías"""
+        self.productos = {
+            "Leche Entera 1L": {
+                "stock": 50,
+                "stock_minimo": 20,
+                "precio_venta": 25.50,
+                "precio_costo": 18.00,
+                "categoria": "Lácteos",
+                "codigo_barras": "7501234567890"
+            },
+            "Arroz Blanco 1kg": {
+                "stock": 100,
+                "stock_minimo": 30,
+                "precio_venta": 35.00,
+                "precio_costo": 25.00,
+                "categoria": "Abarrotes",
+                "codigo_barras": "7501234567891"
+            },
+            "Aceite de Girasol 1L": {
+                "stock": 15,
+                "stock_minimo": 25,
+                "precio_venta": 65.00,
+                "precio_costo": 48.00,
+                "categoria": "Abarrotes",
+                "codigo_barras": "7501234567892"
+            },
+            "Huevos (Docena)": {
+                "stock": 40,
+                "stock_minimo": 15,
+                "precio_venta": 45.00,
+                "precio_costo": 32.00,
+                "categoria": "Lácteos",
+                "codigo_barras": "7501234567893"
+            },
+            "Pan de Molde": {
+                "stock": 10,
+                "stock_minimo": 15,
+                "precio_venta": 38.00,
+                "precio_costo": 25.00,
+                "categoria": "Panadería",
+                "codigo_barras": "7501234567894"
+            },
+            "Detergente Líquido 1L": {
+                "stock": 30,
+                "stock_minimo": 10,
+                "precio_venta": 85.00,
+                "precio_costo": 60.00,
+                "categoria": "Limpieza",
+                "codigo_barras": "7501234567895"
+            },
+            "Café Molido 500g": {
+                "stock": 25,
+                "stock_minimo": 12,
+                "precio_venta": 95.00,
+                "precio_costo": 68.00,
+                "categoria": "Bebidas",
+                "codigo_barras": "7501234567896"
+            }
+        }
+        self.historial_persistente = []
+    
+    def guardar_datos(self):
+        """Guarda el estado actual en Firebase con manejo de errores y timeout."""
+        data = {
+            "productos": self.productos if self.productos else {},
+            "historial": self.historial_persistente if self.historial_persistente else []
+        }
+        try:
+            # Añadimos timeout de 10 segundos para no bloquear la app
+            response = requests.put(
+                f"{FIREBASE_URL}inventario.json", 
+                json=data, 
+                timeout=10
+            )
+            
+            # Verificamos si la respuesta fue exitosa (códigos 200)
+            response.raise_for_status()
+            
+        except requests.exceptions.Timeout:
+            messagebox.showwarning("Conexión Lenta", "El servidor tarda en responder. Los cambios se sincronizarán después.")
+        except Exception as e:
+            messagebox.showerror("Error de Sincronización", f"Error crítico al guardar en Firebase: {e}")
+
+    def setup_ui(self):
+        # Menú superior
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Menú Archivo
+        menu_archivo = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Archivo", menu=menu_archivo)
+        menu_archivo.add_command(label="Exportar Reporte", command=self.exportar_reporte)
+        menu_archivo.add_separator()
+        menu_archivo.add_command(label="Cerrar Sesión", command=self.cerrar_sesion)
+        
+        # Menú Herramientas (solo para admin)
+        if self.tiene_permiso("usuarios"):
+            menu_admin = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Administración", menu=menu_admin)
+            menu_admin.add_command(label="Gestionar Usuarios", command=self.ventana_usuarios)
+        
+        # Pestañas
+        self.tab_control = ttk.Notebook(self.root)
+        self.tab_gestion = ttk.Frame(self.tab_control)
+        self.tab_stock = ttk.Frame(self.tab_control)
+        self.tab_bajo_stock = ttk.Frame(self.tab_control)
+        self.tab_reportes = ttk.Frame(self.tab_control)
+        self.tab_historial = ttk.Frame(self.tab_control)
+        
+        self.tab_control.add(self.tab_gestion, text="🔍 Gestión de Productos")
+        self.tab_control.add(self.tab_stock, text="📊 Inventario General")
+        self.tab_control.add(self.tab_bajo_stock, text="⚠️ Alertas de Stock")
+        
+        if self.tiene_permiso("reportes"):
+            self.tab_control.add(self.tab_reportes, text="📈 Reportes")
+        
+        self.tab_control.add(self.tab_historial, text="📜 Historial")
+        self.tab_control.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        self.setup_tab_gestion()
+        self.setup_tab_stock()
+        self.setup_tab_bajo_stock()
+        if self.tiene_permiso("reportes"):
+            self.setup_tab_reportes()
+        self.setup_tab_historial()
+        self.actualizar_vistas()
+        
+        # Cargar historial
+        self.txt_historial.config(state="normal")
+        for entrada in self.historial_persistente[-100:]:  # Solo últimas 100 entradas
+            self.txt_historial.insert(tk.END, entrada)
+        self.txt_historial.config(state="disabled")
+    
+    def setup_tab_gestion(self):
+        # Canvas y Scrollbar para la pestaña de gestión
+        canvas_gestion = tk.Canvas(self.tab_gestion)
+        scrollbar_gestion = ttk.Scrollbar(self.tab_gestion, orient="vertical", command=canvas_gestion.yview)
+        scrollable_frame_gestion = tk.Frame(canvas_gestion)
+        
+        scrollable_frame_gestion.bind(
+            "<Configure>",
+            lambda e: canvas_gestion.configure(scrollregion=canvas_gestion.bbox("all"))
+        )
+        
+        canvas_gestion.create_window((0, 0), window=scrollable_frame_gestion, anchor="nw")
+        canvas_gestion.configure(yscrollcommand=scrollbar_gestion.set)
+        
+        canvas_gestion.pack(side="left", fill="both", expand=True)
+        scrollbar_gestion.pack(side="right", fill="y")
+        
+        # Bind mousewheel para scroll
+        def _on_mousewheel(event):
+            canvas_gestion.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_gestion.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        # --- BUSCADOR MEJORADO ---
+        self.frame_busqueda = tk.LabelFrame(scrollable_frame_gestion, text="🔎 Buscar Producto", padx=20, pady=10)
+        self.frame_busqueda.pack(pady=5, padx=20, fill="x")
+        
+        frame_busq_controles = tk.Frame(self.frame_busqueda)
+        frame_busq_controles.pack(fill="x")
+        
+        tk.Label(frame_busq_controles, text="Nombre o Código:").pack(side="left", padx=5)
+        self.entry_busqueda = tk.Entry(frame_busq_controles, font=("Arial", 12), width=40)
+        self.entry_busqueda.pack(side="left", padx=5)
+        self.entry_busqueda.bind("<KeyRelease>", self.controlar_autocompletado)
+        self.entry_busqueda.bind("<Return>", lambda e: self.buscar_producto())
+        
+        tk.Button(frame_busq_controles, text="Buscar", command=self.buscar_producto, bg="#4CAF50", fg="white").pack(side="left", padx=5)
+        
+        self.lista_sugerencias = tk.Listbox(self.frame_busqueda, height=5, font=("Arial", 10), exportselection=False)
+        
+        # --- PANEL DE INFORMACIÓN DEL PRODUCTO ---
+        self.frame_info = tk.LabelFrame(scrollable_frame_gestion, text="📦 Información del Producto", padx=20, pady=10)
+        self.frame_info.pack(pady=5, padx=20, fill="x")
+        
+        self.lbl_producto_info = tk.Label(self.frame_info, text="Seleccione un producto para ver detalles", 
+                                         font=("Arial", 10, "italic"), fg="gray")
+        self.lbl_producto_info.pack(pady=10)
+        
+        # --- PANEL DE EDICIÓN (solo si tiene permisos) ---
+        if self.tiene_permiso("editar"):
+            self.frame_operaciones = tk.LabelFrame(scrollable_frame_gestion, text="⚙️ Panel de Control", padx=20, pady=10)
+            self.frame_operaciones.pack(pady=5, padx=20, fill="x")
+            
+            # Modificación de Stock
+            frame_stock_edit = tk.LabelFrame(self.frame_operaciones, text="Stock", padx=10, pady=5)
+            frame_stock_edit.pack(fill="x", pady=5)
+            
+            frame_stock_controles = tk.Frame(frame_stock_edit)
+            frame_stock_controles.pack()
+            
+            tk.Label(frame_stock_controles, text="Cantidad:").grid(row=0, column=0, padx=5)
+            self.entry_cantidad_op = tk.Entry(frame_stock_controles, font=("Arial", 11), width=10, state="disabled")
+            self.entry_cantidad_op.grid(row=0, column=1, padx=5)
+            
+            self.btn_entrada = tk.Button(frame_stock_controles, text="➕ Entrada", command=self.operacion_entrada, 
+                                        bg="#4CAF50", fg="white", state="disabled", width=12)
+            self.btn_entrada.grid(row=0, column=2, padx=5)
+            
+            self.btn_salida = tk.Button(frame_stock_controles, text="➖ Salida", command=self.operacion_salida, 
+                                       bg="#f44336", fg="white", state="disabled", width=12)
+            self.btn_salida.grid(row=0, column=3, padx=5)
+            
+            # Ajuste Manual
+            frame_ajuste = tk.LabelFrame(self.frame_operaciones, text="Ajuste Manual de Stock", padx=10, pady=5)
+            frame_ajuste.pack(fill="x", pady=5)
+            
+            frame_ajuste_controles = tk.Frame(frame_ajuste)
+            frame_ajuste_controles.pack()
+            
+            tk.Label(frame_ajuste_controles, text="Nuevo Stock Total:").pack(side="left", padx=5)
+            self.val_stock = tk.IntVar()
+            self.spin_stock = tk.Spinbox(frame_ajuste_controles, from_=0, to=99999, textvariable=self.val_stock, 
+                                        font=("Arial", 11), width=10, state="disabled")
+            self.spin_stock.pack(side="left", padx=5)
+            self.btn_ajuste_stock = tk.Button(frame_ajuste_controles, text="Aplicar Ajuste", 
+                                             command=self.ajuste_manual_stock, bg="#FF9800", state="disabled")
+            self.btn_ajuste_stock.pack(side="left", padx=10)
+            
+            # Edición de Precios y Mínimos
+            frame_precios = tk.LabelFrame(self.frame_operaciones, text="Precios y Configuración", padx=10, pady=5)
+            frame_precios.pack(fill="x", pady=5)
+            
+            frame_precio_grid = tk.Frame(frame_precios)
+            frame_precio_grid.pack()
+            
+            tk.Label(frame_precio_grid, text="Precio Venta:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+            self.entry_precio_venta = tk.Entry(frame_precio_grid, font=("Arial", 10), width=12, state="disabled")
+            self.entry_precio_venta.grid(row=0, column=1, padx=5, pady=2)
+            
+            tk.Label(frame_precio_grid, text="Precio Costo:").grid(row=0, column=2, sticky="w", padx=5, pady=2)
+            self.entry_precio_costo = tk.Entry(frame_precio_grid, font=("Arial", 10), width=12, state="disabled")
+            self.entry_precio_costo.grid(row=0, column=3, padx=5, pady=2)
+            
+            tk.Label(frame_precio_grid, text="Stock Mínimo:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+            self.entry_stock_min = tk.Entry(frame_precio_grid, font=("Arial", 10), width=12, state="disabled")
+            self.entry_stock_min.grid(row=1, column=1, padx=5, pady=2)
+            
+            self.btn_guardar_config = tk.Button(frame_precio_grid, text="💾 Guardar Cambios", 
+                                               command=self.guardar_configuracion_producto, 
+                                               bg="#2196F3", fg="white", state="disabled")
+            self.btn_guardar_config.grid(row=1, column=2, columnspan=2, padx=5, pady=5)
+            
+            # Botón Eliminar (solo admin y gerente)
+            if self.tiene_permiso("eliminar"):
+                self.btn_eliminar = tk.Button(self.frame_operaciones, text="🗑️ Eliminar Producto", 
+                                             command=self.eliminar_producto, bg="#B71C1C", fg="white", 
+                                             state="disabled", font=("Arial", 10, "bold"))
+                self.btn_eliminar.pack(pady=10)
+        
+        # --- PANEL NUEVO PRODUCTO ---
+        if self.tiene_permiso("crear"):
+            self.frame_alta = tk.LabelFrame(scrollable_frame_gestion, text="➕ Registrar Nuevo Producto", padx=20, pady=10)
+            self.frame_alta.pack(pady=10, padx=20, fill="x")
+            
+            frame_grid = tk.Frame(self.frame_alta)
+            frame_grid.pack()
+            
+            tk.Label(frame_grid, text="Nombre:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_nom = tk.Entry(frame_grid, font=("Arial", 10), width=25)
+            self.entry_nuevo_nom.grid(row=0, column=1, padx=5, pady=3)
+            
+            tk.Label(frame_grid, text="Código Barras:").grid(row=0, column=2, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_codigo = tk.Entry(frame_grid, font=("Arial", 10), width=15)
+            self.entry_nuevo_codigo.grid(row=0, column=3, padx=5, pady=3)
+            
+            tk.Label(frame_grid, text="Stock Inicial:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_stock = tk.Entry(frame_grid, font=("Arial", 10), width=10)
+            self.entry_nuevo_stock.grid(row=1, column=1, padx=5, pady=3, sticky="w")
+            
+            tk.Label(frame_grid, text="Stock Mínimo:").grid(row=1, column=2, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_min = tk.Entry(frame_grid, font=("Arial", 10), width=10)
+            self.entry_nuevo_min.grid(row=1, column=3, padx=5, pady=3, sticky="w")
+            
+            tk.Label(frame_grid, text="Precio Venta:").grid(row=2, column=0, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_pventa = tk.Entry(frame_grid, font=("Arial", 10), width=10)
+            self.entry_nuevo_pventa.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+            
+            tk.Label(frame_grid, text="Precio Costo:").grid(row=2, column=2, sticky="w", padx=5, pady=3)
+            self.entry_nuevo_pcosto = tk.Entry(frame_grid, font=("Arial", 10), width=10)
+            self.entry_nuevo_pcosto.grid(row=2, column=3, padx=5, pady=3, sticky="w")
+            
+            tk.Label(frame_grid, text="Categoría:").grid(row=3, column=0, sticky="w", padx=5, pady=3)
+            self.combo_nuevo_cat = ttk.Combobox(frame_grid, values=self.CATEGORIAS, state="readonly", width=22)
+            self.combo_nuevo_cat.grid(row=3, column=1, padx=5, pady=3, sticky="w")
+            self.combo_nuevo_cat.current(0)
+            
+            tk.Button(frame_grid, text="✅ Registrar Producto", command=self.añadir_nuevo_producto, 
+                     bg="#4CAF50", fg="white", font=("Arial", 10, "bold")).grid(row=3, column=2, columnspan=2, padx=10, pady=10)
+    
+    def setup_tab_stock(self):
+        # Frame para filtros
+        frame_filtros = tk.Frame(self.tab_stock)
+        frame_filtros.pack(pady=5, fill="x", padx=10)
+        
+        tk.Label(frame_filtros, text="Filtrar por categoría:").pack(side="left", padx=5)
+        self.combo_filtro_cat = ttk.Combobox(frame_filtros, values=["Todas"] + self.CATEGORIAS, state="readonly", width=20)
+        self.combo_filtro_cat.pack(side="left", padx=5)
+        self.combo_filtro_cat.current(0)
+        self.combo_filtro_cat.bind("<<ComboboxSelected>>", lambda e: self.actualizar_vistas())
+        
+        tk.Button(frame_filtros, text="🔄 Actualizar", command=self.actualizar_vistas, bg="#2196F3", fg="white").pack(side="left", padx=10)
+        
+        # Treeview mejorado
+        self.tree_stock = ttk.Treeview(self.tab_stock, 
+                                      columns=("Código", "Producto", "Categoría", "Stock", "Mínimo", "P.Venta", "P.Costo", "Margen", "Valor", "Estado"), 
+                                      show="headings", height=20)
+        
+        self.tree_stock.heading("Código", text="Código")
+        self.tree_stock.heading("Producto", text="Producto")
+        self.tree_stock.heading("Categoría", text="Categoría")
+        self.tree_stock.heading("Stock", text="Stock")
+        self.tree_stock.heading("Mínimo", text="Mínimo")
+        self.tree_stock.heading("P.Venta", text="P. Venta")
+        self.tree_stock.heading("P.Costo", text="P. Costo")
+        self.tree_stock.heading("Margen", text="Margen %")
+        self.tree_stock.heading("Valor", text="Valor Inv.")
+        self.tree_stock.heading("Estado", text="Estado")
+        
+        # Anchos de columna
+        self.tree_stock.column("Código", width=100)
+        self.tree_stock.column("Producto", width=200)
+        self.tree_stock.column("Categoría", width=120)
+        self.tree_stock.column("Stock", width=80)
+        self.tree_stock.column("Mínimo", width=80)
+        self.tree_stock.column("P.Venta", width=80)
+        self.tree_stock.column("P.Costo", width=80)
+        self.tree_stock.column("Margen", width=80)
+        self.tree_stock.column("Valor", width=100)
+        self.tree_stock.column("Estado", width=120)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(self.tab_stock, orient="vertical", command=self.tree_stock.yview)
+        self.tree_stock.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree_stock.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", padx=(0, 10), pady=10)
+    
+    def setup_tab_bajo_stock(self):
+        tk.Label(self.tab_bajo_stock, text="⚠️ Productos que necesitan reabastecimiento", 
+                font=("Arial", 12, "bold"), fg="#d32f2f").pack(pady=10)
+        
+        self.tree_bajo = ttk.Treeview(self.tab_bajo_stock, 
+                                     columns=("Código", "Producto", "Categoría", "Stock", "Mínimo", "Faltante"), 
+                                     show="headings", height=15)
+        
+        self.tree_bajo.heading("Código", text="Código")
+        self.tree_bajo.heading("Producto", text="Producto")
+        self.tree_bajo.heading("Categoría", text="Categoría")
+        self.tree_bajo.heading("Stock", text="Stock Actual")
+        self.tree_bajo.heading("Mínimo", text="Stock Mínimo")
+        self.tree_bajo.heading("Faltante", text="Cantidad Sugerida")
+        
+        self.tree_bajo.column("Código", width=100)
+        self.tree_bajo.column("Producto", width=200)
+        self.tree_bajo.column("Categoría", width=120)
+        self.tree_bajo.column("Stock", width=100)
+        self.tree_bajo.column("Mínimo", width=100)
+        self.tree_bajo.column("Faltante", width=120)
+        
+        scrollbar = ttk.Scrollbar(self.tab_bajo_stock, orient="vertical", command=self.tree_bajo.yview)
+        self.tree_bajo.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree_bajo.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", padx=(0, 10), pady=10)
+    
+    def setup_tab_reportes(self):
+        """Tab de reportes con estadísticas"""
+        self.frame_resumen = tk.LabelFrame(self.tab_reportes, text="📊 Resumen General", padx=20, pady=10)
+        self.frame_resumen.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        # Labels para estadísticas
+        self.lbl_total_productos = tk.Label(self.frame_resumen, text="", font=("Arial", 12))
+        self.lbl_total_productos.pack(pady=5)
+        
+        self.lbl_valor_inventario = tk.Label(self.frame_resumen, text="", font=("Arial", 12))
+        self.lbl_valor_inventario.pack(pady=5)
+        
+        self.lbl_productos_criticos = tk.Label(self.frame_resumen, text="", font=("Arial", 12))
+        self.lbl_productos_criticos.pack(pady=5)
+        
+        self.lbl_margen_promedio = tk.Label(self.frame_resumen, text="", font=("Arial", 12))
+        self.lbl_margen_promedio.pack(pady=5)
+        
+        # Frame para categorías
+        self.frame_cat_stats = tk.LabelFrame(self.tab_reportes, text="📈 Por Categoría", padx=20, pady=10)
+        self.frame_cat_stats.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        self.tree_cat_stats = ttk.Treeview(self.frame_cat_stats, 
+                                          columns=("Categoría", "Productos", "Stock Total", "Valor"), 
+                                          show="headings", height=10)
+        self.tree_cat_stats.heading("Categoría", text="Categoría")
+        self.tree_cat_stats.heading("Productos", text="# Productos")
+        self.tree_cat_stats.heading("Stock Total", text="Stock Total")
+        self.tree_cat_stats.heading("Valor", text="Valor Total")
+        
+        self.tree_cat_stats.pack(fill="both", expand=True)
+        
+        tk.Button(self.tab_reportes, text="🔄 Actualizar Reportes", command=self.actualizar_reportes, 
+                 bg="#4CAF50", fg="white", font=("Arial", 10, "bold")).pack(pady=10)
+    
+    def setup_tab_historial(self):
+        # Frame para filtros
+        frame_filtro_hist = tk.Frame(self.tab_historial)
+        frame_filtro_hist.pack(pady=5, fill="x", padx=10)
+        
+        tk.Label(frame_filtro_hist, text="Mostrar últimas:").pack(side="left", padx=5)
+        self.spin_historial_limit = tk.Spinbox(frame_filtro_hist, from_=10, to=500, increment=10, width=10)
+        self.spin_historial_limit.delete(0, tk.END)
+        self.spin_historial_limit.insert(0, "100")
+        self.spin_historial_limit.pack(side="left", padx=5)
+        
+        tk.Button(frame_filtro_hist, text="🔄 Actualizar", command=self.actualizar_historial, 
+                 bg="#2196F3", fg="white").pack(side="left", padx=10)
+        
+        self.txt_historial = tk.Text(self.tab_historial, state="disabled", bg="#f5f5f5", 
+                                     font=("Consolas", 9), wrap="word")
+        
+        scrollbar_hist = ttk.Scrollbar(self.tab_historial, orient="vertical", command=self.txt_historial.yview)
+        self.txt_historial.configure(yscrollcommand=scrollbar_hist.set)
+        
+        self.txt_historial.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbar_hist.pack(side="right", fill="y", padx=(0, 10), pady=10)
+    
+    # ==========================================
+    # FUNCIONES DE BÚSQUEDA Y AUTOCOMPLETADO
+    # ==========================================
+    
+    def controlar_autocompletado(self, event):
+        """Autocompletado mejorado con búsqueda por nombre y código"""
+        if event.keysym in ("Up", "Down", "Return"):
+            return
+        
+        texto = self.entry_busqueda.get().lower()
+        if not texto:
+            self.ocultar_lista()
+            return
+        
+        # Buscar por nombre o código
+        coincidencias = []
+        for nombre, datos in self.productos.items():
+            if texto in nombre.lower() or texto in datos.get("codigo_barras", "").lower():
+                coincidencias.append(nombre)
+        
+        if coincidencias:
+            self.lista_sugerencias.delete(0, tk.END)
+            for item in coincidencias[:10]:  # Máximo 10 sugerencias
+                self.lista_sugerencias.insert(tk.END, item)
+            self.lista_sugerencias.pack(fill="x", pady=5)
+            self.lista_sugerencias.bind("<<ListboxSelect>>", lambda e: self.seleccionar_de_lista())
+        else:
+            self.ocultar_lista()
+    
+    def seleccionar_de_lista(self):
+        """Selecciona producto de la lista de sugerencias"""
+        if not self.lista_sugerencias.curselection():
+            return
+        seleccion = self.lista_sugerencias.get(self.lista_sugerencias.curselection()[0])
+        self.entry_busqueda.delete(0, tk.END)
+        self.entry_busqueda.insert(0, seleccion)
+        self.ocultar_lista()
+        self.buscar_producto()
+    
+    def ocultar_lista(self):
+        """Oculta la lista de sugerencias"""
+        self.lista_sugerencias.pack_forget()
+    
+    def buscar_producto(self):
+        """Busca y carga un producto para edición"""
+        texto_busqueda = self.entry_busqueda.get().strip()
+        
+        # Buscar por nombre exacto primero
+        prod_key = None
+        for nombre in self.productos:
+            if nombre.lower() == texto_busqueda.lower():
+                prod_key = nombre
+                break
+        
+        # Si no se encontró, buscar por código de barras
+        if not prod_key:
+            for nombre, datos in self.productos.items():
+                if datos.get("codigo_barras", "") == texto_busqueda:
+                    prod_key = nombre
+                    break
+        
+        if prod_key:
+            self.cargar_producto_para_edicion(prod_key)
+            self.ocultar_lista()
+        else:
+            messagebox.showwarning("No encontrado", "Producto no encontrado en el inventario.")
+            self.desactivar_edicion()
+    
+    def cargar_producto_para_edicion(self, nombre_producto):
+        """Carga los datos del producto en los campos de edición"""
+        self.producto_actual = nombre_producto
+        datos = self.productos[nombre_producto]
+        
+        # Mostrar información
+        info_texto = f"""
+🏷️ PRODUCTO: {nombre_producto}
+📊 Código: {datos.get('codigo_barras', 'N/A')}
+📁 Categoría: {datos.get('categoria', 'N/A')}
+📦 Stock Actual: {datos['stock']} unidades
+⚠️ Stock Mínimo: {datos['stock_minimo']} unidades
+💵 Precio Venta: ${datos['precio_venta']:.2f}
+💰 Precio Costo: ${datos['precio_costo']:.2f}
+📈 Margen: {self.calcular_margen(datos['precio_venta'], datos['precio_costo']):.1f}%
+💎 Valor en Inventario: ${datos['stock'] * datos['precio_costo']:.2f}
+"""
+        self.lbl_producto_info.config(text=info_texto, font=("Courier", 10), fg="black", justify="left")
+        
+        if self.tiene_permiso("editar"):
+            # Habilitar controles
+            self.val_stock.set(datos['stock'])
+            self.entry_cantidad_op.config(state="normal")
+            self.btn_entrada.config(state="normal")
+            self.btn_salida.config(state="normal")
+            self.spin_stock.config(state="normal")
+            self.btn_ajuste_stock.config(state="normal")
+            
+            # Cargar precios y configuración
+            self.entry_precio_venta.config(state="normal")
+            self.entry_precio_venta.delete(0, tk.END)
+            self.entry_precio_venta.insert(0, str(datos['precio_venta']))
+            
+            self.entry_precio_costo.config(state="normal")
+            self.entry_precio_costo.delete(0, tk.END)
+            self.entry_precio_costo.insert(0, str(datos['precio_costo']))
+            
+            self.entry_stock_min.config(state="normal")
+            self.entry_stock_min.delete(0, tk.END)
+            self.entry_stock_min.insert(0, str(datos['stock_minimo']))
+            
+            self.btn_guardar_config.config(state="normal")
+            
+            if self.tiene_permiso("eliminar"):
+                self.btn_eliminar.config(state="normal")
+    
+    def desactivar_edicion(self):
+        """Desactiva los controles de edición"""
+        self.lbl_producto_info.config(text="Seleccione un producto para ver detalles", 
+                                     font=("Arial", 10, "italic"), fg="gray")
+        self.producto_actual = None
+        
+        if self.tiene_permiso("editar"):
+            self.entry_cantidad_op.config(state="disabled")
+            self.btn_entrada.config(state="disabled")
+            self.btn_salida.config(state="disabled")
+            self.spin_stock.config(state="disabled")
+            self.btn_ajuste_stock.config(state="disabled")
+            self.entry_precio_venta.config(state="disabled")
+            self.entry_precio_costo.config(state="disabled")
+            self.entry_stock_min.config(state="disabled")
+            self.btn_guardar_config.config(state="disabled")
+            
+            if self.tiene_permiso("eliminar"):
+                self.btn_eliminar.config(state="disabled")
+    
+    # ==========================================
+    # OPERACIONES DE INVENTARIO
+    # ==========================================
+    
+    def operacion_entrada(self):
+        """Registra entrada de mercancía"""
+        if not self.producto_actual:
+            return
+        
+        try:
+            cantidad = int(self.entry_cantidad_op.get())
+            if cantidad <= 0:
+                raise ValueError("Cantidad debe ser positiva")
+            
+            self.productos[self.producto_actual]['stock'] += cantidad
+            self.registrar_historial(f"ENTRADA: {self.producto_actual} (+{cantidad} unidades)")
+            self.finalizar_operacion(f"Entrada registrada: +{cantidad} unidades")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", f"Cantidad inválida: {str(e)}")
+    
+    def operacion_salida(self):
+        """Registra salida de mercancía"""
+        if not self.producto_actual:
+            return
+        
+        try:
+            cantidad = int(self.entry_cantidad_op.get())
+            stock_actual = self.productos[self.producto_actual]['stock']
+            
+            if cantidad <= 0:
+                raise ValueError("Cantidad debe ser positiva")
+            
+            if cantidad > stock_actual:
+                raise ValueError(f"Stock insuficiente. Disponible: {stock_actual}")
+            
+            self.productos[self.producto_actual]['stock'] -= cantidad
+            self.registrar_historial(f"SALIDA: {self.producto_actual} (-{cantidad} unidades)")
+            self.finalizar_operacion(f"Salida registrada: -{cantidad} unidades")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+    
+    def ajuste_manual_stock(self):
+        """Realiza ajuste manual del stock"""
+        if not self.producto_actual:
+            return
+        
+        if not messagebox.askyesno("Confirmar Ajuste", 
+                                  "¿Está seguro de realizar un ajuste manual de stock?\nEsta operación quedará registrada en el historial."):
+            return
+        
+        try:
+            nuevo_stock = self.val_stock.get()
+            if nuevo_stock < 0:
+                raise ValueError("El stock no puede ser negativo")
+            
+            stock_anterior = self.productos[self.producto_actual]['stock']
+            self.productos[self.producto_actual]['stock'] = nuevo_stock
+            
+            diferencia = nuevo_stock - stock_anterior
+            signo = "+" if diferencia >= 0 else ""
+            
+            self.registrar_historial(
+                f"AJUSTE MANUAL: {self.producto_actual} ({stock_anterior} → {nuevo_stock}) {signo}{diferencia}"
+            )
+            self.finalizar_operacion("Ajuste manual aplicado correctamente")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+    
+    def guardar_configuracion_producto(self):
+        """Guarda cambios en precios y stock mínimo"""
+        if not self.producto_actual:
+            return
+        
+        try:
+            precio_venta = float(self.entry_precio_venta.get())
+            precio_costo = float(self.entry_precio_costo.get())
+            stock_min = int(self.entry_stock_min.get())
+            
+            if precio_venta <= 0 or precio_costo <= 0:
+                raise ValueError("Los precios deben ser mayores a cero")
+            
+            if precio_venta < precio_costo:
+                if not messagebox.askyesno("Advertencia", 
+                                          "El precio de venta es menor al precio de costo.\n¿Desea continuar?"):
+                    return
+            
+            if stock_min < 0:
+                raise ValueError("El stock mínimo no puede ser negativo")
+            
+            # Guardar cambios
+            datos_anteriores = self.productos[self.producto_actual].copy()
+            self.productos[self.producto_actual]['precio_venta'] = precio_venta
+            self.productos[self.producto_actual]['precio_costo'] = precio_costo
+            self.productos[self.producto_actual]['stock_minimo'] = stock_min
+            
+            cambios = []
+            if datos_anteriores['precio_venta'] != precio_venta:
+                cambios.append(f"P.Venta: ${datos_anteriores['precio_venta']:.2f} → ${precio_venta:.2f}")
+            if datos_anteriores['precio_costo'] != precio_costo:
+                cambios.append(f"P.Costo: ${datos_anteriores['precio_costo']:.2f} → ${precio_costo:.2f}")
+            if datos_anteriores['stock_minimo'] != stock_min:
+                cambios.append(f"Stock Mín: {datos_anteriores['stock_minimo']} → {stock_min}")
+            
+            if cambios:
+                self.registrar_historial(f"ACTUALIZACIÓN: {self.producto_actual} - {', '.join(cambios)}")
+            
+            self.finalizar_operacion("Configuración actualizada correctamente")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+    
+    def añadir_nuevo_producto(self):
+        """Añade un nuevo producto al inventario"""
+        try:
+            nombre = self.entry_nuevo_nom.get().strip()
+            codigo = self.entry_nuevo_codigo.get().strip()
+            stock = int(self.entry_nuevo_stock.get())
+            stock_min = int(self.entry_nuevo_min.get())
+            precio_venta = float(self.entry_nuevo_pventa.get())
+            precio_costo = float(self.entry_nuevo_pcosto.get())
+            categoria = self.combo_nuevo_cat.get()
+            
+            # Validaciones
+            if not nombre:
+                raise ValueError("El nombre del producto es obligatorio")
+            
+            if nombre in self.productos:
+                raise ValueError("Ya existe un producto con ese nombre")
+            
+            # Verificar código de barras único
+            for prod, datos in self.productos.items():
+                if datos.get('codigo_barras') == codigo and codigo:
+                    raise ValueError(f"El código de barras ya está asignado a '{prod}'")
+            
+            if stock < 0 or stock_min < 0:
+                raise ValueError("El stock no puede ser negativo")
+            
+            if precio_venta <= 0 or precio_costo <= 0:
+                raise ValueError("Los precios deben ser mayores a cero")
+            
+            # Crear producto
+            self.productos[nombre] = {
+                "stock": stock,
+                "stock_minimo": stock_min,
+                "precio_venta": precio_venta,
+                "precio_costo": precio_costo,
+                "categoria": categoria,
+                "codigo_barras": codigo
+            }
+            
+            self.registrar_historial(
+                f"NUEVO PRODUCTO: {nombre} | Cat: {categoria} | Stock: {stock} | P.Venta: ${precio_venta:.2f}"
+            )
+            
+            # Limpiar campos
+            self.entry_nuevo_nom.delete(0, tk.END)
+            self.entry_nuevo_codigo.delete(0, tk.END)
+            self.entry_nuevo_stock.delete(0, tk.END)
+            self.entry_nuevo_min.delete(0, tk.END)
+            self.entry_nuevo_pventa.delete(0, tk.END)
+            self.entry_nuevo_pcosto.delete(0, tk.END)
+            self.combo_nuevo_cat.current(0)
+            
+            self.finalizar_operacion(f"Producto '{nombre}' registrado exitosamente")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+    
+    def eliminar_producto(self):
+        """Elimina un producto del inventario"""
+        if not self.producto_actual:
+            return
+        
+        if not messagebox.askyesno("Confirmar Eliminación", 
+                                  f"¿Está seguro de eliminar '{self.producto_actual}'?\n\nEsta acción no se puede deshacer."):
+            return
+        
+        nombre = self.producto_actual
+        datos = self.productos[nombre]
+        
+        # Registrar antes de eliminar
+        self.registrar_historial(
+            f"ELIMINADO: {nombre} | Stock: {datos['stock']} | Valor: ${datos['stock'] * datos['precio_costo']:.2f}"
+        )
+        
+        del self.productos[nombre]
+        self.finalizar_operacion(f"Producto '{nombre}' eliminado del sistema")
+    
+    def finalizar_operacion(self, mensaje):
+        """Finaliza una operación guardando y actualizando vistas"""
+        self.guardar_datos()
+        self.actualizar_vistas()
+        
+        if self.tiene_permiso("reportes"):
+            self.actualizar_reportes()
+        
+        messagebox.showinfo("Operación Exitosa", mensaje)
+        
+        # Limpiar campos
+        if self.tiene_permiso("editar"):
+            self.entry_cantidad_op.delete(0, tk.END)
+        
+        # Recargar producto si aún existe
+        if self.producto_actual and self.producto_actual in self.productos:
+            self.cargar_producto_para_edicion(self.producto_actual)
+        else:
+            self.entry_busqueda.delete(0, tk.END)
+            self.desactivar_edicion()
+    
+    # ==========================================
+    # ACTUALIZACIÓN DE VISTAS
+    # ==========================================
+    
+    def actualizar_vistas(self):
+        """Actualiza todas las vistas del sistema"""
+        # Limpiar tablas
+        for item in self.tree_stock.get_children():
+            self.tree_stock.delete(item)
+        
+        for item in self.tree_bajo.get_children():
+            self.tree_bajo.delete(item)
+        
+        # Obtener filtro de categoría
+        filtro_cat = self.combo_filtro_cat.get()
+        
+        # Llenar vista de stock general
+        for nombre, datos in sorted(self.productos.items()):
+            # Aplicar filtro de categoría
+            if filtro_cat != "Todas" and datos.get('categoria', '') != filtro_cat:
+                continue
+            
+            stock = datos['stock']
+            stock_min = datos['stock_minimo']
+            precio_venta = datos['precio_venta']
+            precio_costo = datos['precio_costo']
+            
+            # Calcular métricas
+            margen = self.calcular_margen(precio_venta, precio_costo)
+            valor_inv = stock * precio_costo
+            
+            # Determinar estado
+            if stock == 0:
+                estado = "🔴 SIN STOCK"
+            elif stock <= stock_min:
+                estado = "⚠️ CRÍTICO"
+            elif stock <= stock_min * 1.5:
+                estado = "⚡ BAJO"
+            else:
+                estado = "✅ OK"
+            
+            self.tree_stock.insert("", tk.END, values=(
+                datos.get('codigo_barras', 'N/A'),
+                nombre,
+                datos.get('categoria', 'N/A'),
+                stock,
+                stock_min,
+                f"${precio_venta:.2f}",
+                f"${precio_costo:.2f}",
+                f"{margen:.1f}%",
+                f"${valor_inv:.2f}",
+                estado
+            ))
+            
+            # Llenar vista de bajo stock
+            if stock <= stock_min:
+                faltante = stock_min - stock + 10  # Sugerir llegar a mínimo + 10
+                self.tree_bajo.insert("", tk.END, values=(
+                    datos.get('codigo_barras', 'N/A'),
+                    nombre,
+                    datos.get('categoria', 'N/A'),
+                    stock,
+                    stock_min,
+                    faltante
+                ))
+    
+    def actualizar_reportes(self):
+        """Actualiza las estadísticas y reportes"""
+        if not self.tiene_permiso("reportes"):
+            return
+        
+        total_productos = len(self.productos)
+        valor_total_inv = 0
+        valor_total_venta = 0
+        productos_criticos = 0
+        margenes = []
+        
+        # Estadísticas por categoría
+        stats_categoria = {}
+        
+        for nombre, datos in self.productos.items():
+            stock = datos['stock']
+            precio_costo = datos['precio_costo']
+            precio_venta = datos['precio_venta']
+            categoria = datos.get('categoria', 'Otros')
+            
+            valor_total_inv += stock * precio_costo
+            valor_total_venta += stock * precio_venta
+            
+            if stock <= datos['stock_minimo']:
+                productos_criticos += 1
+            
+            margen = self.calcular_margen(precio_venta, precio_costo)
+            margenes.append(margen)
+            
+            # Acumular por categoría
+            if categoria not in stats_categoria:
+                stats_categoria[categoria] = {
+                    'cantidad': 0,
+                    'stock_total': 0,
+                    'valor_total': 0
+                }
+            
+            stats_categoria[categoria]['cantidad'] += 1
+            stats_categoria[categoria]['stock_total'] += stock
+            stats_categoria[categoria]['valor_total'] += stock * precio_costo
+        
+        # Calcular margen promedio
+        margen_promedio = sum(margenes) / len(margenes) if margenes else 0
+        ganancia_potencial = valor_total_venta - valor_total_inv
+        
+        # Actualizar labels
+        self.lbl_total_productos.config(
+            text=f"📦 Total de Productos: {total_productos}",
+            fg="#1976D2"
+        )
+        
+        self.lbl_valor_inventario.config(
+            text=f"💰 Valor del Inventario (Costo): ${valor_total_inv:,.2f} | Potencial Venta: ${valor_total_venta:,.2f}",
+            fg="#388E3C"
+        )
+        
+        self.lbl_productos_criticos.config(
+            text=f"⚠️ Productos en Stock Crítico: {productos_criticos}",
+            fg="#D32F2F" if productos_criticos > 0 else "#388E3C"
+        )
+        
+        self.lbl_margen_promedio.config(
+            text=f"📈 Margen Promedio: {margen_promedio:.1f}% | Ganancia Potencial: ${ganancia_potencial:,.2f}",
+            fg="#F57C00"
+        )
+        
+        # Actualizar tabla de categorías
+        for item in self.tree_cat_stats.get_children():
+            self.tree_cat_stats.delete(item)
+        
+        for categoria, stats in sorted(stats_categoria.items()):
+            self.tree_cat_stats.insert("", tk.END, values=(
+                categoria,
+                stats['cantidad'],
+                stats['stock_total'],
+                f"${stats['valor_total']:,.2f}"
+            ))
+    
+    def actualizar_historial(self):
+        """Actualiza la vista del historial"""
+        try:
+            limite = int(self.spin_historial_limit.get())
+        except:
+            limite = 100
+        
+        self.txt_historial.config(state="normal")
+        self.txt_historial.delete("1.0", tk.END)
+        
+        for entrada in self.historial_persistente[:limite]:
+            self.txt_historial.insert(tk.END, entrada)
+        
+        self.txt_historial.config(state="disabled")
+    
+    # ==========================================
+    # FUNCIONES AUXILIARES
+    # ==========================================
+    
+    def calcular_margen(self, precio_venta, precio_costo):
+        """Calcula el margen de ganancia en porcentaje"""
+        if precio_costo == 0:
+            return 0
+        return ((precio_venta - precio_costo) / precio_costo) * 100
+    
+    def registrar_historial(self, mensaje):
+        """Registra una acción en el historial"""
+        timestamp = datetime.now().strftime("[%d/%m/%Y %H:%M:%S]")
+        linea = f"{timestamp} {self.nombre_completo} ({self.rol_actual}) → {mensaje}\n"
+        
+        self.historial_persistente.insert(0, linea)
+        
+        # Mantener solo las últimas 1000 entradas
+        if len(self.historial_persistente) > 1000:
+            self.historial_persistente = self.historial_persistente[:1000]
+        
+        # Actualizar vista si está visible
+        self.txt_historial.config(state="normal")
+        self.txt_historial.insert("1.0", linea)
+        self.txt_historial.config(state="disabled")
+    
+    def exportar_reporte(self):
+        """Exporta un reporte del inventario actual"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            nombre_archivo = f"reporte_inventario_{timestamp}.txt"
+            
+            with open(nombre_archivo, "w", encoding="utf-8") as f:
+                f.write("=" * 80 + "\n")
+                f.write("REPORTE DE INVENTARIO\n")
+                f.write(f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write(f"Usuario: {self.nombre_completo} ({self.rol_actual})\n")
+                f.write("=" * 80 + "\n\n")
+                
+                f.write(f"Total de productos: {len(self.productos)}\n\n")
+                
+                for nombre, datos in sorted(self.productos.items()):
+                    f.write(f"\nProducto: {nombre}\n")
+                    f.write(f"  Código: {datos.get('codigo_barras', 'N/A')}\n")
+                    f.write(f"  Categoría: {datos.get('categoria', 'N/A')}\n")
+                    f.write(f"  Stock: {datos['stock']} (Mínimo: {datos['stock_minimo']})\n")
+                    f.write(f"  Precio Venta: ${datos['precio_venta']:.2f}\n")
+                    f.write(f"  Precio Costo: ${datos['precio_costo']:.2f}\n")
+                    f.write(f"  Margen: {self.calcular_margen(datos['precio_venta'], datos['precio_costo']):.1f}%\n")
+                    f.write(f"  Valor en Inventario: ${datos['stock'] * datos['precio_costo']:.2f}\n")
+                    f.write("-" * 80 + "\n")
+            
+            messagebox.showinfo("Reporte Exportado", f"Reporte guardado como:\n{nombre_archivo}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo exportar el reporte: {e}")
+    
+    def ventana_usuarios(self):
+        """Ventana para gestionar usuarios (solo admin)"""
+        if not self.tiene_permiso("usuarios"):
+            messagebox.showerror("Acceso Denegado", "No tiene permisos para gestionar usuarios")
+            return
+        
+        ventana = tk.Toplevel(self.root)
+        ventana.title("Gestión de Usuarios")
+        ventana.geometry("500x400")
+        
+        tk.Label(ventana, text="Gestión de Usuarios", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Formulario
+        frame_form = tk.LabelFrame(ventana, text="Nuevo Usuario", padx=20, pady=10)
+        frame_form.pack(pady=10, padx=20, fill="x")
+        
+        tk.Label(frame_form, text="Usuario:").grid(row=0, column=0, sticky="w", pady=5)
+        entry_user = tk.Entry(frame_form, width=20)
+        entry_user.grid(row=0, column=1, pady=5)
+        
+        tk.Label(frame_form, text="Contraseña:").grid(row=1, column=0, sticky="w", pady=5)
+        entry_pass = tk.Entry(frame_form, width=20, show="*")
+        entry_pass.grid(row=1, column=1, pady=5)
+        
+        tk.Label(frame_form, text="Nombre Completo:").grid(row=2, column=0, sticky="w", pady=5)
+        entry_nombre = tk.Entry(frame_form, width=20)
+        entry_nombre.grid(row=2, column=1, pady=5)
+        
+        tk.Label(frame_form, text="Rol:").grid(row=3, column=0, sticky="w", pady=5)
+        combo_rol = ttk.Combobox(frame_form, values=["administrador", "gerente", "empleado"], 
+                                state="readonly", width=18)
+        combo_rol.grid(row=3, column=1, pady=5)
+        combo_rol.current(2)
+        
+        def crear_usuario():
+            usuario = entry_user.get().strip()
+            password = entry_pass.get()
+            nombre = entry_nombre.get().strip()
+            rol = combo_rol.get()
+            
+            if not usuario or not password or not nombre:
+                messagebox.showerror("Error", "Todos los campos son obligatorios")
+                return
+            
+            sistema_usuarios = SistemaUsuarios()
+            exito, mensaje = sistema_usuarios.agregar_usuario(usuario, password, rol, nombre)
+            
+            if exito:
+                messagebox.showinfo("Éxito", mensaje)
+                entry_user.delete(0, tk.END)
+                entry_pass.delete(0, tk.END)
+                entry_nombre.delete(0, tk.END)
+                combo_rol.current(2)
+            else:
+                messagebox.showerror("Error", mensaje)
+        
+        tk.Button(frame_form, text="Crear Usuario", command=crear_usuario, 
+                 bg="#4CAF50", fg="white").grid(row=4, column=0, columnspan=2, pady=10)
+        
+        # Información de usuarios predeterminados
+        frame_info = tk.LabelFrame(ventana, text="Usuarios Predeterminados", padx=20, pady=10)
+        frame_info.pack(pady=10, padx=20, fill="both", expand=True)
+        
+        info_text = """
+Usuario: admin | Contraseña: admin123 | Rol: Administrador
+Usuario: gerente | Contraseña: gerente123 | Rol: Gerente  
+Usuario: empleado | Contraseña: empleado123 | Rol: Empleado
+        """
+        
+        tk.Label(frame_info, text=info_text, font=("Courier", 9), justify="left").pack()
+    
+    def cerrar_sesion(self):
+        """Cierra la sesión actual"""
+        if messagebox.askyesno("Cerrar Sesión", "¿Desea cerrar la sesión actual?"):
+            self.guardar_datos()
+            self.root.destroy()
+            mostrar_login()
+
+# ==========================================
+# VENTANA DE LOGIN
+# ==========================================
+def mostrar_login():
+    """Muestra la ventana de inicio de sesión"""
+    sistema_usuarios = SistemaUsuarios()
+    
+    def validar_login(event=None):
+        usuario = entry_usuario.get().strip()
+        password = entry_contrasena.get()
+        
+        if not usuario or not password:
+            messagebox.showwarning("Datos Incompletos", "Ingrese usuario y contraseña")
+            return
+        
+        valido, datos_usuario = sistema_usuarios.validar_credenciales(usuario, password)
+        
+        if valido:
+            login_window.destroy()
+            
+            # Crear ventana principal
+            root = tk.Tk()
+            
+            # Pasar datos completos del usuario
+            usuario_data = {
+                "usuario": usuario,
+                "rol": datos_usuario["rol"],
+                "nombre_completo": datos_usuario["nombre_completo"]
+            }
+            
+            InventarioApp(root, usuario_data)
+            root.mainloop()
+        else:
+            messagebox.showerror("Error de Acceso", "Usuario o contraseña incorrectos")
+            entry_contrasena.delete(0, tk.END)
+    
+    login_window = tk.Tk()
+    login_window.title("Sistema de Inventario - Acceso")
+    login_window.geometry("400x350")
+    login_window.resizable(False, False)
+    
+    # Título
+    tk.Label(login_window, text="🏪 SISTEMA DE INVENTARIO", 
+            font=("Arial", 16, "bold"), fg="#1976D2").pack(pady=20)
+    
+    tk.Label(login_window, text="Supermercado", 
+            font=("Arial", 12), fg="#666").pack()
+    
+    # Frame de login
+    frame_login = tk.LabelFrame(login_window, text="Iniciar Sesión", padx=30, pady=20)
+    frame_login.pack(pady=20, padx=40, fill="both", expand=True)
+    
+    tk.Label(frame_login, text="Usuario:", font=("Arial", 10)).pack(anchor="w", pady=(10, 5))
+    entry_usuario = tk.Entry(frame_login, font=("Arial", 11), width=25)
+    entry_usuario.pack(pady=(0, 15))
+    entry_usuario.focus()
+    
+    tk.Label(frame_login, text="Contraseña:", font=("Arial", 10)).pack(anchor="w", pady=5)
+    entry_contrasena = tk.Entry(frame_login, font=("Arial", 11), width=25, show="●")
+    entry_contrasena.pack(pady=(0, 20))
+    entry_contrasena.bind("<Return>", validar_login)
+    
+    tk.Button(frame_login, text="🔐 Iniciar Sesión", command=validar_login, 
+             bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), 
+             width=20, height=2).pack(pady=10)
+    
+    # Información de usuarios
+    tk.Label(login_window, text="Usuarios de prueba: admin/gerente/empleado", 
+            font=("Arial", 8), fg="#999").pack()
+    
+    login_window.mainloop()
+
+# ==========================================
+# PUNTO DE ENTRADA
+# ==========================================
+if __name__ == "__main__":
+    mostrar_login()
